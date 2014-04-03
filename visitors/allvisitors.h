@@ -45,6 +45,7 @@ class SimpleVisitor : public Visitor {
 	public:
 		virtual void simplevisit(SingleInputOp* op) = 0;
 		virtual void simplevisit(DualInputOp* op) = 0;
+		virtual void simplevisit(TriInputOp* op) = 0;
 		virtual void simplevisit(ZeroInputOp* op) = 0;
 
 		void visit(SingleInputOp* op) { this->simplevisit(op); }
@@ -67,12 +68,15 @@ class SimpleVisitor : public Visitor {
 		void visit(CallCountPrinter* op) { this->simplevisit(op); }
 
 		void visit(DualInputOp* op) { this->simplevisit(op); }
+		void visit(TriInputOp* op) { this->simplevisit(op); }
 		void visit(JoinOp* op) { this->simplevisit(op); }
+		void visit(TriJoinOp* op) { this->simplevisit(op); }
 		void visit(PresortedPrepartitionedMergeJoinOp* op) { this->simplevisit(op); }
 		void visit(SortMergeJoinOp* op) { this->simplevisit(op); }
 		void visit(MPSMJoinOp* op) { this->simplevisit(op); }
 		void visit(OldMPSMJoinOp* op) { this->simplevisit(op); }
 		void visit(HashJoinOp* op) { this->simplevisit(op); }
+		void visit(NPRRJoinOp* op) { this->simplevisit(op); }
 		void visit(IndexHashJoinOp* op) { this->simplevisit(op); }
 
 		void visit(ShuffleOp* op) { this->simplevisit(op); }
@@ -98,6 +102,7 @@ class RecursiveDestroyVisitor : public SimpleVisitor {
 	public:
 		virtual void simplevisit(SingleInputOp* op);
 		virtual void simplevisit(DualInputOp* op);
+		virtual void simplevisit(TriInputOp* op);
 		virtual void simplevisit(ZeroInputOp* op);
 };
 
@@ -106,6 +111,7 @@ class ThreadInitVisitor : public SimpleVisitor {
 		ThreadInitVisitor(unsigned short tid) : threadid(tid) { }
 		virtual void simplevisit(SingleInputOp* op);
 		virtual void simplevisit(DualInputOp* op);
+		virtual void simplevisit(TriInputOp* op);
 		virtual void simplevisit(ZeroInputOp* op);
 		virtual void visit(MergeOp* op);
 	private:
@@ -117,6 +123,7 @@ class ThreadCloseVisitor : public SimpleVisitor {
 		ThreadCloseVisitor(unsigned short tid) : threadid(tid) { }
 		virtual void simplevisit(SingleInputOp* op);
 		virtual void simplevisit(DualInputOp* op);
+		virtual void simplevisit(TriInputOp* op);
 		virtual void simplevisit(ZeroInputOp* op);
 		virtual void visit(MergeOp* op);
 	private:
@@ -128,6 +135,7 @@ class RecursiveFreeVisitor : public SimpleVisitor {
 		RecursiveFreeVisitor() { }
 		virtual void simplevisit(SingleInputOp* op);
 		virtual void simplevisit(DualInputOp* op);
+		virtual void simplevisit(TriInputOp* op);
 		virtual void simplevisit(ZeroInputOp* op);
 };
 
@@ -155,12 +163,15 @@ class PrettyPrinterVisitor : public Visitor {
 		void visit(PartitionOp* op);
 
 		void visit(DualInputOp* op); 
+		void visit(TriInputOp* op);
 		void visit(JoinOp* op); 
+		void visit(TriJoinOp* op);
 		void visit(PresortedPrepartitionedMergeJoinOp* op); 
 		void visit(SortMergeJoinOp* op); 
 		void visit(MPSMJoinOp* op); 
 		void visit(OldMPSMJoinOp* op); 
-		void visit(HashJoinOp* op); 
+		void visit(HashJoinOp* op);
+		void visit(NPRRJoinOp* op);
 		void visit(IndexHashJoinOp* op); 
 
 		void visit(ShuffleOp* op);
@@ -185,6 +196,7 @@ class PrettyPrinterVisitor : public Visitor {
 	private:
 		void printSortMergeJoin(SortMergeJoinOp* op);
 		void printHashJoinOp(HashJoinOp* op);
+		void printNPRRJoinOp(NPRRJoinOp* op);
 		void printHashTableStats(HashTable& ht);
 		void printAffinitization(Affinitizer* op);
 

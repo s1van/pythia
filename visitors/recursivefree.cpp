@@ -51,6 +51,15 @@ void RecursiveFreeVisitor::simplevisit(DualInputOp* op)
 	delete op;
 }
 
+void RecursiveFreeVisitor::simplevisit(TriInputOp* op)
+{
+	op->buildOp->accept(this);
+	op->buildOp = NULL;
+	op->probeOp->accept(this);
+	op->probeOp = NULL;
+	delete op;
+}
+
 void RecursiveFreeVisitor::simplevisit(ZeroInputOp* op)
 {
 	delete op;

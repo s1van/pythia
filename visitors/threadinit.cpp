@@ -48,6 +48,13 @@ void ThreadInitVisitor::simplevisit(DualInputOp* op)
 	op->probeOp->accept(this);
 }
 
+void ThreadInitVisitor::simplevisit(TriInputOp* op)
+{
+	op->threadInit(threadid);
+	op->buildOp->accept(this);
+	op->probeOp->accept(this);
+}
+
 void ThreadInitVisitor::simplevisit(ZeroInputOp* op)
 {
 	op->threadInit(threadid);

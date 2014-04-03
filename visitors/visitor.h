@@ -54,12 +54,15 @@ class ConsumeOp;
 class PartitionOp;
 
 class DualInputOp;
+class TriInputOp;
 class JoinOp;
+class TriJoinOp;
 class PresortedPrepartitionedMergeJoinOp;
 class SortMergeJoinOp;
 class MPSMJoinOp;
 class OldMPSMJoinOp;
 class HashJoinOp;
+class NPRRJoinOp;
 class IndexHashJoinOp;
 
 class ShuffleOp;
@@ -103,12 +106,15 @@ class Visitor {
 		virtual void visit(PartitionOp* op) = 0;
 
 		virtual void visit(DualInputOp* op) = 0;
+		virtual void visit(TriInputOp* op) = 0;
 		virtual void visit(JoinOp* op) = 0;
+		virtual void visit(TriJoinOp* op) = 0;
 		virtual void visit(PresortedPrepartitionedMergeJoinOp* op) = 0;
 		virtual void visit(SortMergeJoinOp* op) = 0;
 		virtual void visit(MPSMJoinOp* op) = 0;
 		virtual void visit(OldMPSMJoinOp* op) = 0;
 		virtual void visit(HashJoinOp* op) = 0;
+		virtual void visit(NPRRJoinOp* op) = 0;
 		virtual void visit(IndexHashJoinOp* op) = 0;
 
 		virtual void visit(ShuffleOp* op) = 0;

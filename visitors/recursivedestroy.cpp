@@ -48,6 +48,13 @@ void RecursiveDestroyVisitor::simplevisit(DualInputOp* op)
 	op->destroy();
 }
 
+void RecursiveDestroyVisitor::simplevisit(TriInputOp* op)
+{
+	op->buildOp->accept(this);
+	op->probeOp->accept(this);
+	op->destroy();
+}
+
 void RecursiveDestroyVisitor::simplevisit(ZeroInputOp* op)
 {
 	op->destroy();

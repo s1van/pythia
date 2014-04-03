@@ -265,6 +265,15 @@ void PrettyPrinterVisitor::visit(DualInputOp* op) {
 	op->buildOp->accept(this);
 }
 
+void PrettyPrinterVisitor::visit(TriInputOp* op) {
+	printIdent();
+	cout << "UNKNOWN DUAL INPUT" << endl;
+	identation++;
+	op->probeOp->accept(this);
+	identation--;
+	op->buildOp->accept(this);
+}
+
 void PrettyPrinterVisitor::printHashTableStats(HashTable& ht)
 {
 	cout << "HashTable (";
@@ -296,6 +305,27 @@ void printJoinProjection(const vector<JoinOp::JoinPrjT>& prj)
 				cout << "B";
 				break;
 			case JoinOp::ProbeSide:
+				cout << "P";
+				break;
+			default:
+				cout << "?";
+		}
+		cout << "$" << prj[i].second + 1 << ", ";
+	}
+	if (prj.size() != 0)
+		cout << "\b\b";
+}
+
+void printTriJoinProjection(const vector<TriJoinOp::JoinPrjT>& prj)
+{
+	for (unsigned int i=0; i<prj.size(); ++i)
+	{
+		switch (prj[i].first)
+		{
+			case TriJoinOp::BuildSide:
+				cout << "B";
+				break;
+			case TriJoinOp::ProbeSide:
 				cout << "P";
 				break;
 			default:
@@ -362,6 +392,41 @@ void PrettyPrinterVisitor::visit(JoinOp* op) {
 	{
 		printIdent();
 		cout << ". ThreadGroup " << i << ": ["; 
+		bool printedsomething=false;
+		for (unsigned int j=0; j<op->threadgroups.size(); ++j)
+		{
+			if (op->threadgroups[j] != i)
+				continue;
+
+			cout << setw(2) << setfill('0') << j << ", ";
+			printedsomething=true;
+		}
+		if (printedsomething)
+			cout << "\b\b";
+		cout << "]" << endl;
+	}
+
+	identation++;
+	op->buildOp->accept(this);
+	identation--;
+	op->probeOp->accept(this);
+}
+
+void PrettyPrinterVisitor::visit(TriJoinOp* op) {
+	printIdent();
+	cout << "Join (";
+
+	cout << "on B$" << op->joinattr1 + 1 << "=P$" << op->joinattr2 + 1;
+	cout << ", ";
+
+	cout << "project=[";
+	printTriJoinProjection(op->projection);
+	cout << "])" << endl;
+
+	for (unsigned int i=0; i<op->barriers.size(); ++i)
+	{
+		printIdent();
+		cout << ". ThreadGroup " << i << ": [";
 		bool printedsomething=false;
 		for (unsigned int j=0; j<op->threadgroups.size(); ++j)
 		{
@@ -617,12 +682,73 @@ void PrettyPrinterVisitor::printHashJoinOp(HashJoinOp* op)
 	identation--;
 }
 
+void PrettyPrinterVisitor::printNPRRJoinOp(NPRRJoinOp* op)
+{
+	cout << "on B$" << op->joinattr1 + 1 << "=P$" << op->joinattr2 + 1;
+	cout << ", ";
+
+	cout << "project=[";
+	printTriJoinProjection(op->projection);
+	cout << "])" << endl;
+
+	for (unsigned int i=0; i<op->barriers.size(); ++i)
+	{
+		printIdent();
+		cout << ". ThreadGroup " << i << ": [";
+		bool printedsomething=false;
+		for (unsigned int j=0; j<op->threadgroups.size(); ++j)
+		{
+			if (op->threadgroups[j] != i)
+				continue;
+
+			cout << setw(2) << setfill('0') << j << ", ";
+			printedsomething=true;
+		}
+		if (printedsomething)
+			cout << "\b\b";
+		cout << "]" << endl;
+	}
+
+	identation++;
+	printIdent();
+	cout << "Build (allocon=";
+	if (op->allocpolicy.empty())
+		cout << "local";
+	else
+		cout << printvec(op->allocpolicy);
+	cout << ")" << endl;
+	for (unsigned int i=0; i<op->groupleader.size(); ++i)
+	{
+		if (op->hashtable.at(i).nbuckets == 0)
+			continue;
+
+		printIdent();
+		cout << ". Group " << setw(2) << setfill('0') << i << ": ";
+		printHashTableStats(op->hashtable[i]);
+	}
+	op->buildOp->accept(this);
+
+	identation--;
+}
+
 void PrettyPrinterVisitor::visit(HashJoinOp* op) 
 {
 	printIdent();
 	cout << "HashJoin (";
 
 	printHashJoinOp(op);
+
+	printIdent();
+	cout << "Probe" << endl;
+	op->probeOp->accept(this);
+}
+
+void PrettyPrinterVisitor::visit(NPRRJoinOp* op)
+{
+	printIdent();
+	cout << "NPRRJoin (";
+
+	printNPRRJoinOp(op);
 
 	printIdent();
 	cout << "Probe" << endl;

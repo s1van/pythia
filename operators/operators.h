@@ -389,6 +389,36 @@ class DualInputOp : public virtual Operator {
 		Operator* probeOp;
 };
 
+class TriInputOp : public virtual Operator {
+	public:
+		virtual void accept(Visitor* v) { v->visit(this); }
+
+		virtual ResultCode scanStart(unsigned short threadid,
+			Page* indexdatapage, Schema& indexdataschema)
+		{
+			ResultCode rescode1;
+			ResultCode rescode2;
+			rescode1 = buildOp->scanStart(threadid, indexdatapage, indexdataschema);
+			rescode2 = probeOp->scanStart(threadid, indexdatapage, indexdataschema);
+			return ((rescode1==rescode2) ? rescode1 : Operator::Error);
+		}
+
+		virtual ResultCode scanStop(unsigned short threadid)
+		{
+			ResultCode rescode1;
+			ResultCode rescode2;
+			rescode1 = buildOp->scanStop(threadid);
+			rescode2 = probeOp->scanStop(threadid);
+			return ((rescode1==rescode2) ? rescode1 : Operator::Error);
+		}
+
+		TriInputOp() : buildOp(0), probeOp(0) { }
+		virtual ~TriInputOp() { }
+
+		Operator* buildOp;
+		Operator* probeOp;
+};
+
 class ZeroInputOp : public virtual Operator
 {
 	public:
@@ -795,6 +825,65 @@ class JoinOp : public virtual DualInputOp {
 };
 
 /**
+ * Generic tri-join class.
+ * No support for composite keys yet.
+ *
+ * Parameter \a projection :
+ * projection := [ <join-attribute-proj>, <join-attribute-proj>, ... ]
+ * join-attribute-proj := "<source>$<scalar>"
+ * source := "B" | "P"
+ *
+ * For example, if projection is [ "B$0", "P$1", "B$2" ], this means that the
+ * output will have the first attribute from the build side ("B$0"), the second
+ * attribute from the probe side ("P$1"), and the third attribute from the
+ * build side ("B$0").
+ *
+ * Paramter \a buildjattr :
+ * buildjattr := <scalar>
+ *
+ * Attribiute to join on on the build side.
+ *
+ * Paramter \a probejattr :
+ * probejattr := <scalar>
+ *
+ * Attribiute to join on on the probe side.
+ *
+ * Paramter \a threadgroups :
+ * threadgroups := [ <threadgroup>, <threadgroup>, ... ]
+ * threadgroup := <list of thread ids>
+ *
+ * The \a threadgroups parameter specifies what other threads does a thread
+ * need to wait for before continuing to the next phase of a join. For example,
+ * if threadgroups = [ [1, 2], [3] ], this means that threads 1 and 2 work
+ * on the same partition, and thus have to synchronize, while thread 3 works on
+ * a separate partition.
+ */
+class TriJoinOp : public virtual TriInputOp {
+	public:
+		friend class PrettyPrinterVisitor;
+		virtual ~TriJoinOp() { }
+
+		virtual void accept(Visitor* v) { v->visit(this); }
+
+		virtual void init(libconfig::Config& root, libconfig::Setting& node);
+
+		enum JoinSrcT { BuildSide, ProbeSide };
+		typedef pair<JoinSrcT, unsigned int> JoinPrjT; //< <source, attribute> pair
+
+	protected:
+		void constructOutputTuple(void* tupbuild, void* tupprobe, void* output);
+
+		vector<JoinPrjT> projection;
+		unsigned int joinattr1, joinattr2;
+
+		vector<unsigned short> threadgroups;  //< threadid->groupid
+		vector<unsigned short> threadposingrp;//< threadid->position in group
+		vector<unsigned short> groupleader;   //< groupid->leadthreadid
+		vector<unsigned short> groupsize;     //< groupid->size
+		vector<PThreadLockCVBarrier> barriers;//< threadid->barrier
+};
+
+/**
  * Hash join class. 
  *
  * Code will create as many hash tables as groups in threadgroups, each having
@@ -860,6 +949,84 @@ class HashJoinOp : public JoinOp {
 			char padding2[64];
 		};
 		vector<HashJoinState*> hashjoinstate;
+
+		TupleHasher buildhasher;
+		TupleHasher probehasher;
+
+	private:
+		vector<Page*> output;
+
+		Comparator keycomparator;
+
+		vector<char> allocpolicy;
+};
+
+/**
+ * NPRR join class.
+ *
+ * Code will create as many hash tables as groups in threadgroups, each having
+ * the parameters specified here. So, if "buckets" is 1024, and there are 4
+ * thread groups, there will be 4 hash tables each having 1024 buckets, or 4096
+ * buckets total.
+ *
+ * Parameter block \a algorithm :
+ * tuplesperbucket = <size of each bucket, in tuples>
+ *
+ * allocpolicy = "local" | "striped"
+ * If "local", hash table is local to the NUMA node of the first thread in the
+ * threadgroup that calls \a threadInit.
+ * If "striped", hash table will be striped. The NUMA node where each
+ * partition will reside in depends on the (optional) parameter "stripeon".
+ *
+ * stripeon = <list of NUMA nodes>
+ * List of NUMA nodes hash table will be striped on. If "stripeon" is absent,
+ * hash table will be striped across all NUMA nodes.
+ */
+class NPRRJoinOp : public TriJoinOp {
+	public:
+		friend class PrettyPrinterVisitor;
+
+		NPRRJoinOp() : buildpagesize(0) { }
+
+		virtual void accept(Visitor* v) { v->visit(this); }
+
+		virtual void init(libconfig::Config& root, libconfig::Setting& node);
+		virtual void threadInit(unsigned short threadid);
+		virtual ResultCode scanStart(unsigned short threadid,
+			Page* indexdatapage, Schema& indexdataschema);
+		virtual GetNextResultT getNext(unsigned short threadid);
+		virtual ResultCode scanStop(unsigned short threadid);
+		virtual void threadClose(unsigned short threadid);
+		virtual void destroy();
+
+	protected:
+		void constructOutputTuple(void* tupbuild, void* tupprobe, void* output);
+
+		/**
+		 * Inserts all the data items in the \a page in the hash table.
+		 * @param page Page to insert from.
+		 * @param groupno Hash table index to insert in.
+		 */
+		void buildFromPage(Page* page, unsigned short groupno);
+
+		void* readNextTupleFromProbe(unsigned short threadid);
+
+		vector<HashTable> hashtable;
+		int buildpagesize;
+
+		Schema sbuild;		///< join key + build projection
+
+		struct NPRRJoinState {
+			NPRRJoinState();
+
+			char padding1[64];
+			void* location;	///< Start from here.
+			HashTable::Iterator htiter;	///< Current iterator on build.
+			Page::Iterator pgiter;	///< Current iterator on probe.
+			bool probedepleted; ///< Don't bother continuing the probe.
+			char padding2[64];
+		};
+		vector<NPRRJoinState*> hashjoinstate;
 
 		TupleHasher buildhasher;
 		TupleHasher probehasher;

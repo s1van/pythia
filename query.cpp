@@ -161,6 +161,25 @@ void constructsubtree(
 		sanitycheck(cfg, cfgnode, "probe");
 		constructsubtree(cfg, cfgnode["probe"], &(tmp->probeOp), udops, level+1, depthmap);
 	}
+	else if (	type == "nprrjoin"
+		   )
+		{
+			// Tri-input operator
+			//
+			TriInputOp* tmp = NULL;
+
+			if (type == "nprrjoin")
+				tmp = new NPRRJoinOp();
+
+			(*rootaddr) = tmp;
+			depthmap[tmp] = level;
+
+			sanitycheck(cfg, cfgnode, "build");
+			constructsubtree(cfg, cfgnode["build"], &(tmp->buildOp), udops, level+1, depthmap);
+
+			sanitycheck(cfg, cfgnode, "probe");
+			constructsubtree(cfg, cfgnode["probe"], &(tmp->probeOp), udops, level+1, depthmap);
+		}
 	else
 	{
 		// Single-input operator

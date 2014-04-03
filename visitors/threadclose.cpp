@@ -48,6 +48,13 @@ void ThreadCloseVisitor::simplevisit(DualInputOp* op)
 	op->threadClose(threadid);
 }
 
+void ThreadCloseVisitor::simplevisit(TriInputOp* op)
+{
+	op->buildOp->accept(this);
+	op->probeOp->accept(this);
+	op->threadClose(threadid);
+}
+
 void ThreadCloseVisitor::simplevisit(ZeroInputOp* op)
 {
 	op->threadClose(threadid);

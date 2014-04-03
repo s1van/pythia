@@ -259,6 +259,135 @@ void JoinOp::init(libconfig::Config& root, libconfig::Setting& node)
 	}
 }
 
+/**
+ * Parses a Setting, that looks like: [ "B$0", "P$1", ... ]
+ *
+ * It first locates the '$' character. It reads one character before (if
+ * possible), and expects either "B" or "P", to denote the input source. It
+ * then tries to read an int after the '$' sign, and returns.
+ * On failure, an exception is thrown.
+ */
+std::vector<TriJoinOp::JoinPrjT> createProjectionVector4Tri(const libconfig::Setting& line) {
+	std::vector<TriJoinOp::JoinPrjT> ret;
+	dbgassert(line.isAggregate());
+
+	for (int i=0; i<line.getLength(); ++i)
+	{
+		string s = line[i];
+		size_t l = s.find('$');
+
+		// Is '$' in an appropriate position?
+		//
+		if (l == string::npos || l == 0)
+			throw InvalidParameter();
+
+		string remainder = s.substr(l+1);
+		unsigned int attribute;
+		istringstream ss(remainder);
+		ss >> attribute;
+
+		// Does a number follow '$'?
+		//
+		if (!ss)
+			throw InvalidParameter();
+
+		char c = s.at(l-1);
+
+		switch (c)
+		{
+			case 'B':
+				ret.push_back(make_pair(TriJoinOp::BuildSide, attribute));
+				break;
+			case 'P':
+				ret.push_back(make_pair(TriJoinOp::ProbeSide, attribute));
+				break;
+			default:
+				// 'B' or 'P' doesn't precede '$', throw.
+				//
+				throw InvalidParameter();
+		}
+	}
+	return ret;
+}
+
+void TriJoinOp::init(libconfig::Config& root, libconfig::Setting& node)
+{
+	Operator::init(root, node);
+
+#ifdef TRACELOG
+	memset(TraceLog, -1, sizeof(TraceEntry)*TraceLogSize);
+	TraceLogTail = 0;
+#endif
+
+	// Remember select and join attributes.
+	projection = createProjectionVector4Tri(node["projection"]);
+	joinattr1 = node["buildjattr"];
+	joinattr2 = node["probejattr"];
+
+	// Create partition groups, and initialize barriers.
+	//
+	libconfig::Setting& partnode = node["threadgroups"];
+	for (int i=0; i<MAX_THREADS; ++i)
+	{
+		threadgroups.push_back(static_cast<unsigned short>(-1));
+		threadposingrp.push_back(static_cast<unsigned short>(-1));
+	}
+	dbgassert(partnode.isAggregate());
+	for (int i=0; i<partnode.getLength(); ++i)
+	{
+		dbgassert(partnode[i].isAggregate());
+
+		// Fill thread->group mapping.
+		//
+		for (int j=0; j<partnode[i].getLength(); ++j)
+		{
+			int tid = partnode[i][j];
+			// Check that same thread does not exist in two groups.
+			assert(threadgroups.at(tid) == static_cast<unsigned short>(-1));
+			assert(threadposingrp.at(tid) == static_cast<unsigned short>(-1));
+
+			threadgroups.at(tid) = i;
+			threadposingrp.at(tid) = j;
+		}
+
+		// Fill group->threadlead mapping.
+		//
+		int leadtid = partnode[i][0];
+		groupleader.push_back(leadtid);
+
+		// Fill group->groupsize mapping.
+		//
+		groupsize.push_back(partnode[i].getLength());
+
+		// Fill group->barrier mapping.
+		//
+		barriers.push_back(PThreadLockCVBarrier());
+		dbgassert(static_cast<unsigned int>(i) == (barriers.size() - 1));
+		barriers.at(i).init(groupsize.at(i));
+	}
+	dbgassert(barriers.size() == groupleader.size());
+
+	// Compute and store output schema.
+	for (unsigned int i=0; i<projection.size(); ++i)
+	{
+		unsigned int attr = projection[i].second;
+
+		switch (projection[i].first)
+		{
+			case BuildSide:
+				dbgassert(attr < buildOp->getOutSchema().columns());
+				schema.add(buildOp->getOutSchema().get(attr));
+				break;
+			case ProbeSide:
+				dbgassert(attr < probeOp->getOutSchema().columns());
+				schema.add(probeOp->getOutSchema().get(attr));
+				break;
+			default:
+				throw InvalidParameter();
+		}
+	}
+}
+
 HashJoinOp::HashJoinState::HashJoinState() 
 	: location(NULL), pgiter(EmptyPage.createIterator()), probedepleted(false) 
 { 
@@ -671,6 +800,421 @@ void HashJoinOp::buildFromPage(Page* page, unsigned short groupno)
  */
 Operator::ResultCode HashJoinOp::scanStop(unsigned short threadid) 
 { 
+	return probeOp->scanStop(threadid);
+}
+
+NPRRJoinOp::NPRRJoinState::NPRRJoinState()
+	: location(NULL), pgiter(EmptyPage.createIterator()), probedepleted(false)
+{
+}
+
+/**
+ * Hash join operator initialization.
+ *
+ * In configuration object, "hash" node picks up "field" from the join
+ * attributes.
+ */
+void NPRRJoinOp::init(libconfig::Config& root, libconfig::Setting& node)
+{
+	TriJoinOp::init(root, node);
+
+	// Compute and store build schemas.
+	sbuild.add(buildOp->getOutSchema().get(joinattr1));
+	for (unsigned int i=0; i<projection.size(); ++i)
+	{
+		if (projection[i].first != BuildSide)
+			continue;
+
+		ColumnSpec ct = buildOp->getOutSchema().get(projection[i].second);
+		sbuild.add(ct);
+	}
+
+	// Initialize hash functions.
+	//
+	dbgassert(!node["hash"].exists("field"));
+
+	node["hash"].add("field", libconfig::Setting::TypeInt) = (int) joinattr1;
+	buildhasher = TupleHasher::create(buildOp->getOutSchema(), node["hash"]);
+	node["hash"].remove("field");
+
+	node["hash"].add("field", libconfig::Setting::TypeInt) = (int) joinattr2;
+	probehasher = TupleHasher::create(probeOp->getOutSchema(), node["hash"]);
+	node["hash"].remove("field");
+
+	dbgassert(buildhasher.buckets() == probehasher.buckets());
+
+	// Do hashtable-related init.
+	//
+	// Join attribute is written first in hashtable during build, thus
+	// comparison on build side is always on first column.
+	//
+	keycomparator = Schema::createComparator(
+			sbuild, 0,
+			probeOp->getOutSchema(), joinattr2,
+			Comparator::NotEqual);
+
+	buildpagesize = node["tuplesperbucket"];
+	buildpagesize *= sbuild.getTupleSize();
+
+	// Create hash table objects, to be initialized by each thread group
+	// leader when calling \a threadInit.
+	//
+	for (unsigned int i=0; i<groupleader.size(); ++i)
+	{
+		hashtable.push_back(HashTable());
+	}
+
+	// Create and populate NUMA allocation policy object. This could be done
+	// per-group, but for now we use a blanket allocation policy.
+	//
+	string policystr = node["allocpolicy"];
+	if (policystr == "striped")
+	{
+#ifdef ENABLE_NUMA
+		int maxnuma = numa_max_node() + 1;
+		if (node.exists("stripeon"))
+		{
+			// Stripe data on user-specified NUMA nodes.
+			//
+			libconfig::Setting& stripenode = node["stripeon"];
+			for (int i=0; i<stripenode.getLength(); ++i)
+			{
+				int v = stripenode[i];
+				assert(0 <= v);
+				assert(v < maxnuma);
+				allocpolicy.push_back(static_cast<char>(v));
+			}
+		}
+		else
+		{
+			// No constraint specified, stripe on all NUMA nodes.
+			//
+			for (char i=0; i<maxnuma; ++i)
+			{
+				allocpolicy.push_back(i);
+			}
+		}
+#else
+		cerr << " ** NUMA POLICY WARNING: Memory policy is ignored, "
+			<< "NUMA disabled at compile." << endl;
+#endif
+	}
+
+	// Create state and output tables.
+	//
+	for (int i=0; i<MAX_THREADS; ++i)
+	{
+		output.push_back(NULL);
+		hashjoinstate.push_back(NULL);
+	}
+}
+
+void NPRRJoinOp::threadInit(unsigned short threadid)
+{
+	void* space2 = numaallocate_local("HJst", sizeof(NPRRJoinState), this);
+	hashjoinstate[threadid] = new (space2) NPRRJoinState();
+
+	const unsigned short groupno = threadgroups.at(threadid);
+	if (groupleader.at(groupno) == threadid)
+	{
+		hashtable[groupno].init(buildhasher.buckets(), buildpagesize,
+				sbuild.getTupleSize(), allocpolicy, this);
+	}
+
+	// Wait for hashtable init before clearing bucket space and creating
+	// iterator.
+	//
+	barriers[groupno].Arrive();
+	hashtable[groupno].bucketclear(threadposingrp.at(threadid), groupsize.at(groupno));
+
+	barriers[groupno].Arrive();
+	hashjoinstate[threadid]->htiter = hashtable[groupno].createIterator();
+
+	void* space = numaallocate_local("HJpg", sizeof(Page), this);
+	output[threadid] = new (space) Page(buffsize, schema.getTupleSize(), this, "HJpg");
+}
+
+/**
+ * BUG: On error, other threads will get stuck at the barrier.
+ */
+Operator::ResultCode NPRRJoinOp::scanStart(unsigned short threadid,
+		Page* indexdatapage, Schema& indexdataschema)
+{
+	dbgassert(threadid < threadgroups.size());
+	const unsigned short groupno = threadgroups[threadid];
+	dbgassert(groupno < barriers.size());
+
+	TRACE('1');
+
+	// Build hash table.
+	//
+	GetNextResultT result;
+	ResultCode rescode;
+
+	rescode = buildOp->scanStart(threadid, indexdatapage, indexdataschema);
+	if (rescode == Operator::Error) {
+		return Error;
+	}
+
+	while (result.first == Operator::Ready) {
+		result = buildOp->getNext(threadid);
+		buildFromPage(result.second, groupno);
+	}
+
+	if (result.first == Operator::Error) {
+		return Error;
+	}
+
+	rescode = buildOp->scanStop(threadid);
+	if (rescode == Operator::Error) {
+		return Error;
+	}
+
+	TRACE('2');
+
+	// This thread is complete. Wait for other threads in the same group (ie.
+	// partition) before you continue, or this thread might lose data.
+	//
+	barriers[groupno].Arrive();
+
+	TRACE('3');
+
+	// Hash table is complete now, every thread can proceed.
+	// Handle first call:
+	// 0. Start scan on probe.
+	// 1. Make state.location point at first output tuple of probeOp->GetNext.
+	// 2. Place htiter and pgiter.
+
+	rescode = probeOp->scanStart(threadid, indexdatapage, indexdataschema);
+	if (rescode == Operator::Error) {
+		return Error;
+	}
+
+	void* tup2;
+	tup2 = readNextTupleFromProbe(threadid);
+	hashjoinstate[threadid]->location = tup2;
+
+	if (tup2 != NULL) {
+		unsigned int bucket = probehasher.hash(tup2);
+		hashtable[groupno].placeIterator(hashjoinstate[threadid]->htiter, bucket);
+	} else {
+		// Probe is empty?!
+		rescode = Finished;
+	}
+
+	TRACE('4');
+
+	return rescode;
+}
+
+/**
+ * Evaluates \a projection on the two input tuples, writing result to
+ * \a output. No test is done to see that the tuples match.
+ * Overrides JoinOp::constructOutputTuple to use hashtable schema \a sbuild.
+ * @param tupbuild The build tuple.
+ * @param tupprobe The probe tuple.
+ * @param output The output tuple. Caller must have preallocated enough
+ * space as described by this object's \a getOutSchema().
+ */
+void NPRRJoinOp::constructOutputTuple(void* tupbuild, void* tupprobe, void* output)
+{
+	void* tupattr;
+	Schema& probeschema = probeOp->getOutSchema();
+
+	// Copy each column to destination. buildFromPage scans projection
+	// sequentially, so we repeat buildattr starts from 1, because the join
+	// key is attr 0.
+	for (unsigned int j=0, buildattr=1; j<projection.size(); ++j)
+	{
+		if (projection[j].first == BuildSide)
+		{
+			dbg2assert(sbuild.getColumnType(buildattr) == schema.getColumnType(j));
+			dbg2assert(sbuild.getColumnWidth(buildattr) <= schema.getColumnWidth(j));
+			tupattr = sbuild.calcOffset(tupbuild, buildattr);
+			schema.writeData(output, j, tupattr);
+			buildattr++;
+		}
+		else
+		{
+			dbg2assert(projection[j].first == ProbeSide);
+			unsigned int attr = projection[j].second;
+			tupattr = probeschema.calcOffset(tupprobe, attr);
+			schema.writeData(output, j, tupattr);
+		}
+	}
+}
+
+Operator::GetNextResultT NPRRJoinOp::getNext(unsigned short threadid)
+{
+	void* tup1;
+	void* tup2;
+
+	TRACE('G');
+
+	Page* out = output[threadid];
+	NPRRJoinState* state = hashjoinstate[threadid];
+	HashTable& ht = hashtable[threadgroups[threadid]];
+
+	out->clear();
+	tup2 = state->location;
+
+	// Reposition based on iterators.
+	while(1) {
+		// Finish joining last tuple.
+		while ( (tup1 = state->htiter.next()) ) {
+			void* target;
+
+			if (keycomparator.eval(tup1, tup2)) {
+				continue;
+			}
+
+			// Keys equal, join tup1 with tup2 and copy at output buffer.
+			target = out->allocateTuple();
+			dbg2assert(target!=NULL);
+
+			constructOutputTuple(tup1, tup2, target);
+
+			// If buffer full, return with Ready.
+			// Nothing to remember, as htiter is part of the state already.
+			if (!out->canStoreTuple()) {
+				TRACE('R');
+				return make_pair(Ready, out);
+			}
+		}
+
+		// Old tuple done. Read new tuple from probe side.
+		tup2 = readNextTupleFromProbe(threadid);
+
+		// Find bucket in hashtable and remember in state.
+		// readNextTupleFromProbe() places pgiter, so no need to worry here.
+		state->location = tup2;
+		if (tup2 != NULL) {
+			// hash tup2 to place htiter.
+			unsigned int bucket = probehasher.hash(tup2);
+			ht.placeIterator(state->htiter, bucket);
+		} else {
+			state->htiter = ht.createIterator();
+			TRACE('F');
+			return make_pair(Operator::Finished, out);
+		}
+
+	}
+
+	TRACE('E');
+	// How the hell did we get here?
+	return make_pair(Operator::Error, &EmptyPage);
+}
+
+/**
+ * Reads next tuple from probe. WARNING: non-existent error-handling.
+ * As a side-effect, it sets the \a pgiter in the \a hashjoinstate for the
+ * current thread.
+ * @return Next tuple if available, otherwise NULL.
+ * @bug Remove exception, make proper returns with error checking.
+ */
+void* NPRRJoinOp::readNextTupleFromProbe(unsigned short threadid) {
+	void* ret;
+	GetNextResultT result;
+
+	// Scan forward from pgit.
+	Page::Iterator& pgit = hashjoinstate[threadid]->pgiter;
+	ret = pgit.next();
+
+	// If valid tuple, return it.
+	if (ret != NULL)
+		return ret;
+
+	// If probe depleted, nothing more to do here.
+	if (hashjoinstate[threadid]->probedepleted)
+		return NULL;
+
+	// Request next page and place iterator.
+	result = probeOp->getNext(threadid);
+
+	if (result.first == Operator::Error) {
+		throw QueryExecutionError();
+	}
+
+	pgit.place(result.second);
+
+	// If return code was Finished, return tuple. Otherwise, recurse.
+	// (Rationale for recursion: Perhaps it's an empty page in a Ready stream.)
+	if (result.first == Operator::Finished) {
+		hashjoinstate[threadid]->probedepleted = true;
+		return pgit.next();
+	}
+	return readNextTupleFromProbe(threadid);
+}
+
+void NPRRJoinOp::threadClose(unsigned short threadid)
+{
+	if (hashjoinstate[threadid]) {
+		numadeallocate(hashjoinstate[threadid]);
+	}
+	hashjoinstate[threadid] = NULL;
+
+	if (output[threadid]) {
+		numadeallocate(output[threadid]);
+	}
+	output[threadid] = NULL;
+
+	// Wait for all threads to finish, then clear buckets and destroy hashtable.
+	//
+	const unsigned short groupno = threadgroups.at(threadid);
+
+	barriers[groupno].Arrive();
+	hashtable[groupno].bucketclear(threadposingrp.at(threadid), groupsize.at(groupno));
+
+	barriers[groupno].Arrive();
+	if (groupleader.at(groupno) == threadid)
+	{
+		hashtable[groupno].destroy();
+	}
+}
+
+void NPRRJoinOp::destroy()
+{
+	buildhasher.destroy();
+	probehasher.destroy();
+
+#ifdef TRACELOG
+	dbgDumpTraceToFile("hjtrace");
+#endif
+}
+
+void NPRRJoinOp::buildFromPage(Page* page, unsigned short groupno)
+{
+	void* tup = NULL;
+	void* target = NULL;
+	unsigned int hashbucket;
+	Schema& buildschema = buildOp->getOutSchema();
+
+	Page::Iterator it = page->createIterator();
+	while( (tup = it.next()) ) {
+		// Find destination bucket.
+		hashbucket = buildhasher.hash(tup);
+		target = hashtable[groupno].atomicAllocate(hashbucket, this);
+
+		// Project on build, copy result to target.
+		sbuild.writeData(target, 0, buildschema.calcOffset(tup, joinattr1));
+		for (unsigned int j=0, buildattrtarget=0; j<projection.size(); ++j)
+		{
+			if (projection[j].first != BuildSide)
+				continue;
+
+			unsigned int attr = projection[j].second;
+			sbuild.writeData(target, buildattrtarget+1,	// dest, col in output
+					buildschema.calcOffset(tup, attr));	// src
+			buildattrtarget++;
+		}
+	}
+}
+
+/**
+ * Scan on buildOp is started and stopped inside \a scanStart.
+ */
+Operator::ResultCode NPRRJoinOp::scanStop(unsigned short threadid)
+{
 	return probeOp->scanStop(threadid);
 }
 
