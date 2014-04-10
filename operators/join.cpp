@@ -38,6 +38,7 @@
 #endif
 
 #include <vector>
+#include <time.h>
 
 #include "operators.h"
 #include "operators_priv.h"
@@ -1019,6 +1020,8 @@ Operator::ResultCode NPRRJoinOp::scanStart(unsigned short threadid,
 	}
 
 	gsize = 0;
+	clock_t tbuild,tprobe,tfinish;
+	tbuild = clock();
 	while (result.first == Operator::Ready) {
 		result = buildOp->getNext(threadid);
 		buildFromPage(result.second, groupno);
@@ -1026,6 +1029,8 @@ Operator::ResultCode NPRRJoinOp::scanStart(unsigned short threadid,
 	}
 
 	// Ugly hack for triangle counting
+	tprobe = clock();
+	long long blackhole = 0;
 	for ( boost::unordered_map<int, int>::iterator l = H1A.begin(); l != H1A.end(); ++l ) {
 		if (H1B.find(l->first) != H1B.end()) { //intersection of C1 and C2
 			//std::cout<< "heavy or light ? "<< l->second << " " << H1B[l->first] <<" " << gsize << endl;
@@ -1034,6 +1039,7 @@ Operator::ResultCode NPRRJoinOp::scanStart(unsigned short threadid,
 					for (std::vector<int>::iterator R2_it = H2A[l->first].begin() ; R2_it != H2A[l->first].end(); ++R2_it) {
 						if (H0AB.find(std::make_pair(*R2_it, *R1_it)) != H0AB.end() ||
 								H0AB.find(std::make_pair(*R1_it, *R2_it)) != H0AB.end() ) {
+							blackhole++;
 							//std::cout<< "light triangle = "<< *R1_it << " " << *R2_it <<" " << l->first << endl;
 						}
 					}
@@ -1044,6 +1050,7 @@ Operator::ResultCode NPRRJoinOp::scanStart(unsigned short threadid,
 					std::pair<int,int> e = el->first;
 					if (H0AB.find(std::make_pair(e.second, l->first)) != H0AB.end() &&
 							H0AB.find(std::make_pair(l->first, e.first)) != H0AB.end() ) {
+						blackhole++;
 						//std::cout<< "heavy triangle = "<< e.second << " " << l->first <<" " << e.first << endl;
 					}
 				}
@@ -1051,6 +1058,8 @@ Operator::ResultCode NPRRJoinOp::scanStart(unsigned short threadid,
 
 		}
 	}
+	tfinish = clock();
+	std::cout<< "Triangle Counting -  build: "<< (double)(tprobe-tbuild) << "\tprobe: " << (double)(tfinish-tprobe) << endl;
 
 	if (result.first == Operator::Error) {
 		return Error;

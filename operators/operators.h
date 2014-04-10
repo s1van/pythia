@@ -1048,6 +1048,7 @@ class NPRRJoinOp : public TriJoinOp {
 		//for triangle counting
 		int vnum;
 		int gsize;
+
 		boost::unordered_map< int, int> H1A, H1B;
 		boost::unordered_map< std::pair<int,int>, bool> H0AB;
 		boost::unordered_map< int, std::vector<int> > H2A, H2B;
