@@ -992,6 +992,17 @@ void PrettyPrinterVisitor::visit(CycleAccountant* op)
 	op->nextOp->accept(this);
 }
 
+void PrettyPrinterVisitor::visit(TriangleCountOp* op)
+{
+	bool printheader = true;
+
+	printIdent();
+	cout << "TriangleCountOp" << endl;
+
+	op->nextOp->accept(this);
+}
+
+
 void PrettyPrinterVisitor::printAffinitization(Affinitizer* op)
 {
 	printIdent();

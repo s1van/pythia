@@ -40,6 +40,7 @@
 #include <pthread.h>
 
 #include <sys/select.h>
+#include <boost/unordered_map.hpp>
 
 #include "libconfig.h++"
 
@@ -1013,6 +1014,7 @@ class NPRRJoinOp : public TriJoinOp {
 		 * @param groupno Hash table index to insert in.
 		 */
 		void buildFromPage(Page* page, unsigned short groupno);
+		void buildTriangleIndexFromPage(Page* page, unsigned short groupno);
 
 		void* readNextTupleFromProbe(unsigned short threadid);
 
@@ -1042,6 +1044,13 @@ class NPRRJoinOp : public TriJoinOp {
 		Comparator keycomparator;
 
 		vector<char> allocpolicy;
+
+		//for triangle counting
+		int vnum;
+		int gsize;
+		boost::unordered_map< int, int> H1A, H1B;
+		boost::unordered_map< std::pair<int,int>, bool> H0AB;
+		boost::unordered_map< int, std::vector<int> > H2A, H2B;
 };
 
 /**
@@ -1455,6 +1464,29 @@ class MemSegmentWriter : public virtual SingleInputOp
 		vector<unsigned short> numanodes;
 		vector<string> paths;
 		string counter;
+};
+
+/**
+ * Take one ScanOp on a graph and Count the #triangles within
+ */
+class TriangleCountOp : public virtual SingleInputOp
+{
+	public:
+		friend class PrettyPrinterVisitor;
+		virtual void accept(Visitor* v) { v->visit(this); }
+
+		virtual void init(libconfig::Config& root, libconfig::Setting& node);
+
+		virtual void threadInit(unsigned short threadid);
+		virtual ResultCode scanStart(unsigned short threadid,
+			Page* indexdatapage, Schema& indexdataschema);
+		virtual GetNextResultT getNext(unsigned short threadid);
+		virtual ResultCode scanStop(unsigned short threadid);
+		virtual void threadClose(unsigned short threadid);
+
+	private:
+
+
 };
 
 /**

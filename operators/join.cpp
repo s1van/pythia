@@ -406,6 +406,45 @@ void TriJoinOp::init(libconfig::Config& root, libconfig::Setting& node)
 	}
 }
 
+void TriangleCountOp::init(libconfig::Config& root, libconfig::Setting& node)
+{
+	Operator::init(root, node);
+
+}
+
+void TriangleCountOp::threadInit(unsigned short threadid)
+{
+
+}
+
+Operator::ResultCode TriangleCountOp::scanStart(unsigned short threadid,
+		Page* indexdatapage, Schema& indexdataschema)
+{
+	ResultCode res;
+
+	return res;
+}
+
+Operator::GetNextResultT TriangleCountOp::getNext(unsigned short threadid)
+{
+	GetNextResultT res;
+
+	return res;
+}
+
+Operator::ResultCode TriangleCountOp::scanStop(unsigned short threadid)
+{
+	ResultCode res;
+
+	return res;
+}
+
+void TriangleCountOp::threadClose(unsigned short threadid)
+{
+
+}
+
+
 HashJoinOp::HashJoinState::HashJoinState() 
 	: location(NULL), pgiter(EmptyPage.createIterator()), probedepleted(false) 
 { 
@@ -536,6 +575,7 @@ void HashJoinOp::threadInit(unsigned short threadid)
 	void* space = numaallocate_local("HJpg", sizeof(Page), this);
 	output[threadid] = new (space) Page(buffsize, schema.getTupleSize(), this, "HJpg");
 }
+
 
 /**
  * BUG: On error, other threads will get stuck at the barrier.
@@ -836,6 +876,10 @@ void NPRRJoinOp::init(libconfig::Config& root, libconfig::Setting& node)
 {
 	TriJoinOp::init(root, node);
 
+	//for triangle counting
+	vnum = node["vnum"];
+	std::cout<< "vnum="<< vnum<< endl;
+
 	// Compute and store build schemas.
 	sbuild.add(buildOp->getOutSchema().get(joinattr1));
 	for (unsigned int i=0; i<projection.size(); ++i)
@@ -974,9 +1018,38 @@ Operator::ResultCode NPRRJoinOp::scanStart(unsigned short threadid,
 		return Error;
 	}
 
+	gsize = 0;
 	while (result.first == Operator::Ready) {
 		result = buildOp->getNext(threadid);
 		buildFromPage(result.second, groupno);
+		buildTriangleIndexFromPage(result.second, groupno);
+	}
+
+	// Ugly hack for triangle counting
+	for ( boost::unordered_map<int, int>::iterator l = H1A.begin(); l != H1A.end(); ++l ) {
+		if (H1B.find(l->first) != H1B.end()) { //intersection of C1 and C2
+			//std::cout<< "heavy or light ? "<< l->second << " " << H1B[l->first] <<" " << gsize << endl;
+			if (l->second * H1B[l->first] < gsize) { // light node
+				for (std::vector<int>::iterator R1_it = H2B[l->first].begin() ; R1_it != H2B[l->first].end(); ++R1_it) {
+					for (std::vector<int>::iterator R2_it = H2A[l->first].begin() ; R2_it != H2A[l->first].end(); ++R2_it) {
+						if (H0AB.find(std::make_pair(*R2_it, *R1_it)) != H0AB.end() ||
+								H0AB.find(std::make_pair(*R1_it, *R2_it)) != H0AB.end() ) {
+							//std::cout<< "light triangle = "<< *R1_it << " " << *R2_it <<" " << l->first << endl;
+						}
+					}
+				}
+
+			} else { // heavy node
+				for ( boost::unordered_map< std::pair<int,int>, bool>::iterator el = H0AB.begin(); el != H0AB.end(); ++el ) {
+					std::pair<int,int> e = el->first;
+					if (H0AB.find(std::make_pair(e.second, l->first)) != H0AB.end() &&
+							H0AB.find(std::make_pair(l->first, e.first)) != H0AB.end() ) {
+						//std::cout<< "heavy triangle = "<< e.second << " " << l->first <<" " << e.first << endl;
+					}
+				}
+			}
+
+		}
 	}
 
 	if (result.first == Operator::Error) {
@@ -1225,6 +1298,49 @@ void NPRRJoinOp::buildFromPage(Page* page, unsigned short groupno)
 					buildschema.calcOffset(tup, attr));	// src
 			buildattrtarget++;
 		}
+	}
+}
+
+void NPRRJoinOp::buildTriangleIndexFromPage(Page* page, unsigned short groupno)
+{
+	void* tup = NULL;
+	void* target = NULL;
+	unsigned int hashbucket;
+	Schema& buildschema = buildOp->getOutSchema();
+
+	Page::Iterator it = page->createIterator();
+	//Assume running in single thread
+	while( (tup = it.next()) ) {
+		//std::cout<< "test tup = "<< sbuild.asInt(tup, 0) << endl;
+		gsize++;
+
+		int a = sbuild.asInt(tup, 0);
+		int b = sbuild.asInt(tup, 1);
+
+		if (H1A.find(a) == H1A.end()) {
+			H1A.insert(std::make_pair(a,1));
+		} else {
+			H1A[a] = H1A[a] + 1;
+		}
+
+		if (H1B.find(b) == H1B.end()) {
+			H1B.insert(std::make_pair(b,1));
+		} else {
+			H1B[b] = H1B[b] + 1;
+		}
+
+		H0AB.insert(std::make_pair(std::make_pair(a,b),true));
+
+		if (H2A.find(a) == H2A.end()) {
+			H2A.insert(std::make_pair(a,std::vector<int>() ));
+		}
+		H2A[a].push_back(b);
+
+		if (H2B.find(b) == H2B.end()) {
+			H2B.insert(std::make_pair(b,std::vector<int>() ));
+		}
+		H2B[b].push_back(a);
+
 	}
 }
 

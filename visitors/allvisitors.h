@@ -60,6 +60,7 @@ class SimpleVisitor : public Visitor {
 		void visit(MapWrapper* op) { this->simplevisit(op); }
 		void visit(MemSegmentWriter* op) { this->simplevisit(op); }
 		void visit(CycleAccountant* op) { this->simplevisit(op); }
+		void visit(TriangleCountOp* op) { this->simplevisit(op); }
 		void visit(Project* op) { this->simplevisit(op); }
 		void visit(CallStateChecker* op) { this->simplevisit(op); }
 		void visit(SchemaPrinter* op) { this->simplevisit(op); }
@@ -153,6 +154,7 @@ class PrettyPrinterVisitor : public Visitor {
 		void visit(MapWrapper* op);
 		void visit(MemSegmentWriter* op);
 		void visit(CycleAccountant* op);
+		void visit(TriangleCountOp* op);
 		void visit(Project* op);
 		void visit(CallStateChecker* op);
 		void visit(SchemaPrinter* op);

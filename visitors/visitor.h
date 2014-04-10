@@ -44,6 +44,7 @@ class MergeOp;
 class MapWrapper;
 class MemSegmentWriter;
 class CycleAccountant;
+class TriangleCountOp;
 class Project;
 class CallStateChecker;
 class SchemaPrinter;
@@ -96,6 +97,7 @@ class Visitor {
 		virtual void visit(MapWrapper* op) = 0;
 		virtual void visit(MemSegmentWriter* op) = 0;
 		virtual void visit(CycleAccountant* op) = 0;
+		virtual void visit(TriangleCountOp* op) = 0;
 		virtual void visit(Project* op) = 0;
 		virtual void visit(CallStateChecker* op) = 0;
 		virtual void visit(SchemaPrinter* op) = 0;
