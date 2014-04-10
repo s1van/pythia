@@ -179,6 +179,9 @@ void constructsubtree(
 
 			sanitycheck(cfg, cfgnode, "probe");
 			constructsubtree(cfg, cfgnode["probe"], &(tmp->probeOp), udops, level+1, depthmap);
+
+			sanitycheck(cfg, cfgnode, "duole");
+			constructsubtree(cfg, cfgnode["duole"], &(tmp->duoleOp), udops, level+1, depthmap);
 		}
 	else
 	{

@@ -396,27 +396,28 @@ class TriInputOp : public virtual Operator {
 		virtual ResultCode scanStart(unsigned short threadid,
 			Page* indexdatapage, Schema& indexdataschema)
 		{
-			ResultCode rescode1;
-			ResultCode rescode2;
+			ResultCode rescode1, rescode2, rescode3;
 			rescode1 = buildOp->scanStart(threadid, indexdatapage, indexdataschema);
 			rescode2 = probeOp->scanStart(threadid, indexdatapage, indexdataschema);
-			return ((rescode1==rescode2) ? rescode1 : Operator::Error);
+			rescode3 = duoleOp->scanStart(threadid, indexdatapage, indexdataschema);
+			return ((rescode1==rescode2)&&(rescode1==rescode3) ? rescode1 : Operator::Error);
 		}
 
 		virtual ResultCode scanStop(unsigned short threadid)
 		{
-			ResultCode rescode1;
-			ResultCode rescode2;
+			ResultCode rescode1, rescode2, rescode3;
 			rescode1 = buildOp->scanStop(threadid);
 			rescode2 = probeOp->scanStop(threadid);
-			return ((rescode1==rescode2) ? rescode1 : Operator::Error);
+			rescode3 = duoleOp->scanStop(threadid);
+			return ((rescode1==rescode2)&&(rescode1==rescode3) ? rescode1 : Operator::Error);
 		}
 
-		TriInputOp() : buildOp(0), probeOp(0) { }
+		TriInputOp() : buildOp(0), probeOp(0), duoleOp(0) { }
 		virtual ~TriInputOp() { }
 
 		Operator* buildOp;
 		Operator* probeOp;
+		Operator* duoleOp;
 };
 
 class ZeroInputOp : public virtual Operator
@@ -867,7 +868,7 @@ class TriJoinOp : public virtual TriInputOp {
 
 		virtual void init(libconfig::Config& root, libconfig::Setting& node);
 
-		enum JoinSrcT { BuildSide, ProbeSide };
+		enum JoinSrcT { BuildSide, ProbeSide, DuoleSide };
 		typedef pair<JoinSrcT, unsigned int> JoinPrjT; //< <source, attribute> pair
 
 	protected:
@@ -881,6 +882,10 @@ class TriJoinOp : public virtual TriInputOp {
 		vector<unsigned short> groupleader;   //< groupid->leadthreadid
 		vector<unsigned short> groupsize;     //< groupid->size
 		vector<PThreadLockCVBarrier> barriers;//< threadid->barrier
+
+		vector<unsigned int> battrs;  //attributes for B table
+		vector<unsigned int> pattrs;  //attributes for P table
+		vector<unsigned int> dattrs;  //attributes for D table
 };
 
 /**

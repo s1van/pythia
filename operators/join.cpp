@@ -301,6 +301,9 @@ std::vector<TriJoinOp::JoinPrjT> createProjectionVector4Tri(const libconfig::Set
 			case 'P':
 				ret.push_back(make_pair(TriJoinOp::ProbeSide, attribute));
 				break;
+			case 'D':
+				ret.push_back(make_pair(TriJoinOp::DuoleSide, attribute));
+				break;
 			default:
 				// 'B' or 'P' doesn't precede '$', throw.
 				//
@@ -318,6 +321,19 @@ void TriJoinOp::init(libconfig::Config& root, libconfig::Setting& node)
 	memset(TraceLog, -1, sizeof(TraceEntry)*TraceLogSize);
 	TraceLogTail = 0;
 #endif
+
+	libconfig::Setting& attrnode = node["attrs"];
+	for (int j=0, i=0; j<attrnode[i].getLength(); ++j) {
+		battrs.push_back(attrnode[i][j]);
+	}
+	for (int j=0, i=1; j<attrnode[i].getLength(); ++j) {
+		pattrs.push_back(attrnode[i][j]);
+	}
+	for (int j=0, i=2; j<attrnode[i].getLength(); ++j) {
+		dattrs.push_back(attrnode[i][j]);
+	}
+
+	std::cout<< battrs[0]<<" "<<battrs[1]<< endl;
 
 	// Remember select and join attributes.
 	projection = createProjectionVector4Tri(node["projection"]);
@@ -381,6 +397,8 @@ void TriJoinOp::init(libconfig::Config& root, libconfig::Setting& node)
 			case ProbeSide:
 				dbgassert(attr < probeOp->getOutSchema().columns());
 				schema.add(probeOp->getOutSchema().get(attr));
+				break;
+			case DuoleSide:
 				break;
 			default:
 				throw InvalidParameter();
