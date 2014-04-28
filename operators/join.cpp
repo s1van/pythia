@@ -1096,6 +1096,9 @@ void NPRRJoinOp::init(libconfig::Config& root, libconfig::Setting& node)
 		output.push_back(NULL);
 		hashjoinstate.push_back(NULL);
 	}
+
+	void* space = numaallocate_local("TC", sizeof(Page), this);
+	out= new (space) Page(buffsize, schema.getTupleSize(), this, "TC");
 }
 
 void NPRRJoinOp::threadInit(unsigned short threadid)
@@ -1165,7 +1168,21 @@ Operator::ResultCode NPRRJoinOp::scanStart(unsigned short threadid,
 					for (std::vector<int>::iterator R2_it = H2A[l->first].begin() ; R2_it != H2A[l->first].end(); ++R2_it) {
 						if (H0AB.find(std::make_pair(*R2_it, *R1_it)) != H0AB.end() ||
 								H0AB.find(std::make_pair(*R1_it, *R2_it)) != H0AB.end() ) {
+
 							blackhole++;
+
+							void *target;
+							target = out->allocateTuple();
+							dbg2assert(target!=NULL);
+							*reinterpret_cast<int*>(target) = *R1_it;
+							// constructOutputTuple(tup1, tup2, target); // ToDo: construction
+							if (!out->canStoreTuple()) {
+								void* clone_out = (void*) malloc (out->capacity() );
+								memcpy(clone_out, out, sizeof(out->capacity()));
+								free(clone_out);
+								out->clear();
+							}
+
 							//std::cout<< "light triangle = "<< *R1_it << " " << *R2_it <<" " << l->first << endl;
 						}
 					}
@@ -1177,6 +1194,19 @@ Operator::ResultCode NPRRJoinOp::scanStart(unsigned short threadid,
 					if (H0AB.find(std::make_pair(e.second, l->first)) != H0AB.end() &&
 							H0AB.find(std::make_pair(l->first, e.first)) != H0AB.end() ) {
 						blackhole++;
+
+						void *target;
+						target = out->allocateTuple();
+						dbg2assert(target!=NULL);
+						*reinterpret_cast<int*>(target) = l->first;
+						// constructOutputTuple(tup1, tup2, target); // ToDo: construction
+						if (!out->canStoreTuple()) {
+							void* clone_out = (void*) malloc (out->capacity() );
+							memcpy(clone_out, out, sizeof(out->capacity()));
+							free(clone_out);
+							out->clear();
+						}
+
 						//std::cout<< "heavy triangle = "<< e.second << " " << l->first <<" " << e.first << endl;
 					}
 				}
