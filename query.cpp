@@ -191,6 +191,14 @@ void constructsubtree(
 
 		if (type == "aggregate_sum")
 			tmp = new AggregateSum();
+		else if (type == "triangle_count") {
+			tmp = new TriangleCountOp();
+
+			(*rootaddr) = tmp;
+			depthmap[tmp] = level;
+
+			constructsubtree(cfg, cfgnode["build"], &(tmp->nextOp), udops, level+1, depthmap);
+		}
 		else if (type == "aggregate_count")
 			tmp = new AggregateCount();
 		else if (type == "merge")

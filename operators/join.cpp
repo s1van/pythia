@@ -407,10 +407,61 @@ void TriJoinOp::init(libconfig::Config& root, libconfig::Setting& node)
 	}
 }
 
+void TriangleCountOp::buildTriangleIndexFromPage(Page* page)
+{
+	void* tup = NULL;
+	void* target = NULL;
+	unsigned int hashbucket;
+
+	Page::Iterator it = page->createIterator();
+	//Assume running in single thread
+	while( (tup = it.next()) ) {
+		//std::cout<< "test tup = "<< sbuild.asInt(tup, 0) << endl;
+		gsize++;
+
+		int a = sbuild.asInt(tup, 0);
+		int b = sbuild.asInt(tup, 1);
+
+		if (H1A.find(a) == H1A.end()) {
+			H1A.insert(std::make_pair(a,1));
+		} else {
+			H1A[a] = H1A[a] + 1;
+		}
+
+		if (H1B.find(b) == H1B.end()) {
+			H1B.insert(std::make_pair(b,1));
+		} else {
+			H1B[b] = H1B[b] + 1;
+		}
+
+		H0AB.insert(std::make_pair(std::make_pair(a,b),true));
+
+		if (H2A.find(a) == H2A.end()) {
+			H2A.insert(std::make_pair(a,std::vector<int>() ));
+		}
+		H2A[a].push_back(b);
+
+		if (H2B.find(b) == H2B.end()) {
+			H2B.insert(std::make_pair(b,std::vector<int>() ));
+		}
+		H2B[b].push_back(a);
+
+	}
+}
+
 void TriangleCountOp::init(libconfig::Config& root, libconfig::Setting& node)
 {
 	Operator::init(root, node);
 
+	sbuild.add(nextOp->getOutSchema().get(0));
+	sbuild.add(nextOp->getOutSchema().get(1));
+
+	schema.add(nextOp->getOutSchema().get(0));
+	schema.add(nextOp->getOutSchema().get(1));
+	schema.add(nextOp->getOutSchema().get(0));
+
+	void* space = numaallocate_local("TC", sizeof(Page), this);
+	out= new (space) Page(buffsize, schema.getTupleSize(), this, "TC");
 }
 
 void TriangleCountOp::threadInit(unsigned short threadid)
@@ -421,16 +472,91 @@ void TriangleCountOp::threadInit(unsigned short threadid)
 Operator::ResultCode TriangleCountOp::scanStart(unsigned short threadid,
 		Page* indexdatapage, Schema& indexdataschema)
 {
-	ResultCode res;
+	GetNextResultT result;
+	ResultCode rescode;
 
-	return res;
+	rescode = nextOp->scanStart(threadid, indexdatapage, indexdataschema);
+	if (rescode == Operator::Error) {
+		return Error;
+	}
+
+	gsize = 0;
+	while (result.first == Operator::Ready) {
+		result = nextOp->getNext(threadid);
+		buildTriangleIndexFromPage(result.second);
+	}
+	// Ugly hack for triangle counting
+	H1A_iter = H1A.begin();
+
+
+	return rescode;
 }
 
 Operator::GetNextResultT TriangleCountOp::getNext(unsigned short threadid)
 {
 	GetNextResultT res;
+	void* target;
 
-	return res;
+	for (; H1A_iter != H1A.end(); ++H1A_iter ) {
+		if (H1B.find(H1A_iter->first) != H1B.end()) { //intersection of C1 and C2
+			//std::cout<< "heavy or light ? "<< H1A_iter->second << " " << H1B[H1A_iter->first] <<" " << gsize << endl;
+			if (H1A_iter->second * H1B[H1A_iter->first] < gsize) { // light node
+				for (std::vector<int>::iterator R1_it = H2B[H1A_iter->first].begin() ; R1_it != H2B[H1A_iter->first].end(); ++R1_it) {
+					for (std::vector<int>::iterator R2_it = H2A[H1A_iter->first].begin() ; R2_it != H2A[H1A_iter->first].end(); ++R2_it) {
+						if (H0AB.find(std::make_pair(*R2_it, *R1_it)) != H0AB.end() ||
+								H0AB.find(std::make_pair(*R1_it, *R2_it)) != H0AB.end() ) {
+							//std::cout<< "light triangle = "<< *R1_it << " " << *R2_it <<" " << H1A_iter->first << endl;
+
+							// Keys equal, join tup1 with tup2 and copy at output buffer.
+							target = out->allocateTuple();
+							dbg2assert(target!=NULL);
+
+							// constructOutputTuple(tup1, tup2, target); // ToDo: construction
+
+							// If buffer full, return with Ready.
+							// Nothing to remember, as htiter is part of the state already.
+							if (!out->canStoreTuple()) {
+								TRACE('R');
+								++H1A_iter;
+								return make_pair(Ready, out);
+							}
+						}
+					}
+				}
+
+			} else { // heavy node
+				for ( boost::unordered_map< std::pair<int,int>, bool>::iterator el = H0AB.begin(); el != H0AB.end(); ++el ) {
+					std::pair<int,int> e = el->first;
+					if (H0AB.find(std::make_pair(e.second, H1A_iter->first)) != H0AB.end() &&
+							H0AB.find(std::make_pair(H1A_iter->first, e.first)) != H0AB.end() ) {
+						//std::cout<< "heavy triangle = "<< e.second << " " << H1A_iter->first <<" " << e.first << endl;
+
+						// Keys equal, join tup1 with tup2 and copy at output buffer.
+						target = out->allocateTuple();
+						dbg2assert(target!=NULL);
+
+						// constructOutputTuple(tup1, tup2, target); // ToDo: construction
+
+						// If buffer full, return with Ready.
+						// Nothing to remember, as htiter is part of the state already.
+						if (!out->canStoreTuple()) {
+							TRACE('R');
+							++H1A_iter;
+							return make_pair(Ready, out);
+						}
+					}
+				}
+			}
+
+
+
+
+		}
+	}
+
+	TRACE('E');
+	// How the hell did we get here?
+	return make_pair(Operator::Error, &EmptyPage);
 }
 
 Operator::ResultCode TriangleCountOp::scanStop(unsigned short threadid)

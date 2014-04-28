@@ -1468,7 +1468,7 @@ class MemSegmentWriter : public virtual SingleInputOp
 };
 
 /**
- * Take one ScanOp on a graph and Count the #triangles within
+ * Take one ScanOp on a graph (edge list) and Count the #triangles within
  */
 class TriangleCountOp : public virtual SingleInputOp
 {
@@ -1485,9 +1485,22 @@ class TriangleCountOp : public virtual SingleInputOp
 		virtual ResultCode scanStop(unsigned short threadid);
 		virtual void threadClose(unsigned short threadid);
 
+	protected:
+		void buildTriangleIndexFromPage(Page* page);
+		Schema sbuild;		///< join key + build projection
+
 	private:
 
+		//for triangle counting
+		int vnum;
+		int gsize;
 
+		boost::unordered_map< int, int> H1A, H1B;
+		boost::unordered_map< std::pair<int,int>, bool> H0AB;
+		boost::unordered_map< int, std::vector<int> > H2A, H2B;
+
+		boost::unordered_map<int, int>::iterator H1A_iter;
+		Page* out;
 };
 
 /**
